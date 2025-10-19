@@ -71,6 +71,9 @@
 
 #define DA(type) struct { type *items; size_t count, capacity; }
 
+#define da_foreach(Type, it, da) \
+    for (Type *it = (da)->items; it < (da)->items + (da)->count; ++it)
+
 #define da_reserve(da, expected_capacity) \
     do { \
         if ((expected_capacity) > (da)->capacity) { \
