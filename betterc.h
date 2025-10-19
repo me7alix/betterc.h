@@ -13,6 +13,11 @@
 #define BC_REALLOC realloc
 #endif
 
+#ifndef BC_CALLOC
+#include <stdlib.h>
+#define BC_CALLOC calloc
+#endif
+
 #ifndef BC_FREE
 #include <stdlib.h>
 #define BC_FREE free
@@ -77,14 +82,16 @@
 #define da_reserve(da, expected_capacity) \
     do { \
         if ((expected_capacity) > (da)->capacity) { \
-            if ((da)->capacity == 0) { \
-                (da)->capacity = BC_DA_INIT_CAP; \
+            size_t new_capacity = (da)->capacity ? (da)->capacity : BC_DA_INIT_CAP; \
+            while ((expected_capacity) > new_capacity) { \
+                new_capacity *= 2; \
             } \
-            while ((expected_capacity) > (da)->capacity) { \
-                (da)->capacity *= 2; \
+            void *new_items = BC_REALLOC((da)->items, new_capacity * sizeof(*(da)->items)); \
+            BC_ASSERT(new_items != NULL || (expected_capacity) == 0); \
+            if (new_items || (expected_capacity) == 0) { \
+                (da)->items = BC_DECLTYPE_CAST((da)->items)new_items; \
+                (da)->capacity = new_capacity; \
             } \
-            (da)->items = BC_DECLTYPE_CAST((da)->items)BC_REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
-            BC_ASSERT((da)->items != NULL); \
         } \
     } while (0)
 
@@ -104,7 +111,7 @@
 #define da_insert(da, index, item) \
     do { \
         (da)->count++; \
-        da_reserve((da), (da)->count + 1); \
+        da_reserve((da), (da)->count); \
         BC_MEMCPY((da)->items+(index)+1, (da)->items+(index), sizeof(*(da)->items)*((da)->count-index)); \
         da_get(da, (index)) = item; \
     } while (0)
@@ -118,7 +125,7 @@
 #define da_resize(da, cnt) \
     do { \
         (da)->count = (cnt); \
-        da_reserve((da), (da)->count + 1); \
+        da_reserve((da), (da)->count); \
         da_shrink(da); \
     } while (0)
 
@@ -152,6 +159,7 @@
 
 #define da_append_many(da, new_items, new_items_count) \
     do { \
+        BC_ASSERT(new_items); \
         da_reserve((da), (da)->count + (new_items_count)); \
         BC_MEMCPY((da)->items + (da)->count, (new_items), (new_items_count)*sizeof(*(da)->items)); \
         (da)->count += (new_items_count); \
@@ -184,7 +192,7 @@ extern i32 hashtable_type##_compare(key_type a, key_type b); \
 static void hashtable_type##_ensure_capacity(hashtable_type *ht) { \
     if (ht->capacity != 0) return; \
     ht->capacity = 128; \
-    ht->arr = (hashtable_type##_node**) BC_REALLOC(NULL, ht->capacity * sizeof(hashtable_type##_node*)); \
+    ht->arr = (hashtable_type##_node**) BC_CALLOC(ht->capacity, sizeof(hashtable_type##_node*)); \
 } \
 \
 void hashtable_type##_add(hashtable_type *ht, key_type key, value_type val) { \
@@ -198,7 +206,7 @@ void hashtable_type##_add(hashtable_type *ht, key_type key, value_type val) { \
         } \
         cur = cur->next; \
     } \
-    hashtable_type##_node *n = (hashtable_type##_node*) BC_REALLOC(NULL, sizeof(hashtable_type##_node)); \
+    hashtable_type##_node *n = (hashtable_type##_node*) BC_CALLOC(1, sizeof(hashtable_type##_node)); \
     n->key = key; \
     n->val = val; \
     n->next = ht->arr[idx]; \
@@ -207,7 +215,7 @@ void hashtable_type##_add(hashtable_type *ht, key_type key, value_type val) { \
     if (ht->count > ht->capacity * 2) { \
         size_t old_cap = ht->capacity; \
         size_t new_cap = old_cap * 3; \
-        hashtable_type##_node **new_arr = (hashtable_type##_node**) BC_REALLOC(NULL, new_cap * sizeof(hashtable_type##_node*)); \
+        hashtable_type##_node **new_arr = (hashtable_type##_node**) BC_CALLOC(new_cap, sizeof(hashtable_type##_node*)); \
         for (size_t i = 0; i < old_cap; ++i) { \
             hashtable_type##_node *it = ht->arr[i]; \
             while (it) { \
@@ -218,7 +226,7 @@ void hashtable_type##_add(hashtable_type *ht, key_type key, value_type val) { \
                 it = next; \
             } \
         } \
-        free(ht->arr); \
+        BC_FREE(ht->arr); \
         ht->arr = new_arr; \
         ht->capacity = new_cap; \
     } \
@@ -243,7 +251,7 @@ void hashtable_type##_remove(hashtable_type *ht, key_type key) { \
     while (cur) { \
         if (hashtable_type##_compare(cur->key, key) == 0) { \
             if (prev) prev->next = cur->next; else ht->arr[idx] = cur->next; \
-            free(cur); \
+            BC_FREE(cur); \
             ht->count--; \
             return; \
         } \
@@ -262,7 +270,7 @@ void hashtable_type##_free(hashtable_type *ht) { \
             cur = next; \
         } \
     } \
-    free(ht->arr); \
+    BC_FREE(ht->arr); \
     ht->arr = NULL; \
     ht->capacity = 0; \
     ht->count = 0; \
@@ -326,16 +334,26 @@ i32 hashtable_type##_compare(key_type a, key_type b) { \
 
 /* String builder */
 
+#include <stdarg.h>
+
 typedef DA(char) StringBuilder;
 
-#define sb_appendf(sb, fmt, ...) \
-do { \
-    int n = snprintf(NULL, 0, fmt, ##__VA_ARGS__); \
-    da_reserve((sb), (sb)->count + n + 1); \
-    char *dest = (sb)->items + (sb)->count; \
-    snprintf(dest, n + 1, fmt, ##__VA_ARGS__); \
-    (sb)->count += n; \
-} while (0)
+static inline int sb_appendf(StringBuilder *sb, const char *fmt, ...) {
+    va_list args;
+
+    va_start(args, fmt);
+    int n = vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
+
+    da_reserve(sb, sb->count + n + 1);
+    char *dest = sb->items + sb->count;
+    va_start(args, fmt);
+    vsnprintf(dest, n+1, fmt, args);
+    va_end(args);
+
+    sb->count += n;
+    return n;
+}
 
 #define sb_append(sb, c) da_append(sb, c)
 #define sb_reset(sb)     da_resize(sb, 0)
