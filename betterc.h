@@ -23,9 +23,9 @@
 #define BC_FREE free
 #endif
 
-#ifndef BC_MEMCPY
+#ifndef BC_MEMMOVE
 #include <string.h>
-#define BC_MEMCPY memcpy
+#define BC_MEMMOVE memmove
 #endif
 
 #ifndef _BC_RUNTIME_CHECKS
@@ -110,10 +110,17 @@
 
 #define da_insert(da, index, item) \
     do { \
-        (da)->count++; \
-        da_reserve((da), (da)->count); \
-        BC_MEMCPY((da)->items+(index)+1, (da)->items+(index), sizeof(*(da)->items)*((da)->count-index)); \
-        da_get(da, (index)) = item; \
+        size_t _idx = (size_t)(index); \
+        size_t _old = (da)->count; \
+        BC_ASSERT(_idx <= _old); \
+        da_reserve((da), _old + 1); \
+        if (_idx < _old) { \
+            BC_MEMMOVE((da)->items + _idx + 1, \
+                       (da)->items + _idx, \
+                       sizeof *(da)->items * (_old - _idx)); \
+        } \
+        (da)->count = _old + 1; \
+        da_get(da, _idx) = (item); \
     } while (0)
 
 #define da_get(da, index) \
@@ -138,7 +145,7 @@
 #define da_remove_ordered(da, index) \
     do { \
         da_get(da, index) = da_last(da); \
-        BC_MEMCPY((da)->items+(index), (da)->items+(index)+1, \
+        BC_MEMMOVE((da)->items+(index), (da)->items+(index)+1, \
                 sizeof(*(da)->items)*((da)->count-index)); \
         (da)->count--; \
     } while (0)
@@ -161,7 +168,7 @@
     do { \
         BC_ASSERT(new_items); \
         da_reserve((da), (da)->count + (new_items_count)); \
-        BC_MEMCPY((da)->items + (da)->count, (new_items), (new_items_count)*sizeof(*(da)->items)); \
+        BC_MEMMOVE((da)->items + (da)->count, (new_items), (new_items_count)*sizeof(*(da)->items)); \
         (da)->count += (new_items_count); \
     } while (0)
 
@@ -280,7 +287,7 @@ void hashtable_type##_free(hashtable_type *ht) { \
     HT_DECL(hashtable_type, key_type, value_type) \
     HT_IMPL(hashtable_type, key_type, value_type)
 
-#define HT_FOREACH_NODE(hashtable_type, ht, nodevar) \
+#define ht_foreach_node(hashtable_type, ht, nodevar) \
     for (size_t _ht_idx = 0; (ht)->capacity && _ht_idx < (ht)->capacity; ++_ht_idx) \
         for (hashtable_type##_node *nodevar = (ht)->arr[_ht_idx]; nodevar; nodevar = nodevar->next)
 
